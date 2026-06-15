@@ -2,20 +2,35 @@
   "name": "pi-fusion",
   "version": "0.1.0",
   "description": "Use OpenRouter Fusion from Pi as a first-class model provider.",
-  "keywords": ["pi-package", "pi", "openrouter", "fusion", "coding-agent"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "openrouter",
+    "fusion",
+    "coding-agent"
+  ],
   "license": "MIT",
   "type": "module",
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": [
+      "./extensions"
+    ]
   },
-  "files": ["bin", "extensions", "README.md", "LICENSE"],
+  "files": [
+    "bin",
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.79.4",
     "@earendil-works/pi-coding-agent": "^0.79.4",
+    "@earendil-works/pi-tui": "^0.79.4",
     "@types/node": "^22.10.0",
     "tsx": "^4.20.0",
     "typescript": "^5.7.0"

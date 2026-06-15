@@ -17,7 +17,16 @@ if [ -x bin/resolve-openrouter-key.mjs ]; then ok "key resolver executable"; els
 
 if grep -q 'registerProvider(PROVIDER_ID' extensions/pi-fusion.ts && grep -q 'openrouter/fusion' extensions/pi-fusion.ts; then ok "provider registers fusion"; else bad "provider registers fusion"; fi
 
-if grep -q 'fusion:doctor' extensions/pi-fusion.ts && grep -q 'fusion:setup' extensions/pi-fusion.ts && grep -q 'fusion:help' extensions/pi-fusion.ts; then ok "commands present"; else bad "commands present"; fi
+if grep -q 'fusion:doctor' extensions/pi-fusion.ts \
+  && grep -q 'fusion:setup' extensions/pi-fusion.ts \
+  && grep -q 'fusion:help' extensions/pi-fusion.ts \
+  && grep -q 'fusion:ask' extensions/pi-fusion.ts \
+  && grep -q 'fusion:review-diff' extensions/pi-fusion.ts \
+  && grep -q 'fusion:review-file' extensions/pi-fusion.ts; then
+  ok "commands present"
+else
+  bad "commands present"
+fi
 
 for mode in budget quality frontier; do
   if grep -q "pi-fusion-$mode" extensions/pi-fusion.ts README.md; then ok "mode present: $mode"; else bad "mode present: $mode"; fi

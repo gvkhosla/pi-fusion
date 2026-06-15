@@ -4,10 +4,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 
 const PROVIDER_ID = "pi-fusion";
 const OPENROUTER_API = "https://openrouter.ai/api/v1";
 const DEFAULT_TIMEOUT_MS = 15_000;
+const MAX_ADVISOR_CONTEXT_CHARS = 60_000;
 const RESOLVER_PATH = fileURLToPath(new URL("../bin/resolve-openrouter-key.mjs", import.meta.url));
 const API_KEY_RESOLVER_COMMAND = `!node ${JSON.stringify(RESOLVER_PATH)}`;
 
@@ -299,6 +301,188 @@ async function createFusionPreset(apiKey: string, preset: FusionPreset, options:
 	return json;
 }
 
+
+type AdvisorArgs = {
+	mode: string;
+	question: string;
+};
+
+type ChatCompletionResponse = {
+	choices?: Array<{
+		message?: {
+			content?: string | null;
+		};
+	}>;
+	error?: {
+		message?: string;
+	};
+};
+
+const ADVISOR_SYSTEM_PROMPT = `You are pi-fusion, a multi-model coding advisor running inside Pi.
+Give direct, practical engineering advice. Prefer concrete risks, fixes, and tests over general commentary.
+Use this exact structure:
+
+## Verdict
+One or two sentences.
+
+## Main risks
+- ...
+
+## Disagreements / uncertainty
+- ...
+
+## Concrete fixes
+- ...
+
+## Tests to add
+- ...
+
+## Confidence
+Low/Medium/High with one sentence why.`;
+
+function resolveAdvisorModel(mode: string): string | { error: string } {
+	const normalized = mode.trim().toLowerCase();
+	if (!normalized || normalized === "default" || normalized === "fusion" || normalized === "openrouter/fusion") {
+		return "openrouter/fusion";
+	}
+	const preset = PRESET_BY_MODE.get(normalized);
+	if (preset) return `@preset/${preset.slug}`;
+	if (normalized.startsWith("@preset/")) return normalized;
+	return { error: `Unknown advisor mode: ${mode}. Use default, ${PRESETS.map((preset) => preset.mode).join(", ")}, or @preset/<slug>.` };
+}
+
+export function parseAdvisorArgs(args: string): AdvisorArgs {
+	const tokens = args.trim().split(/\s+/).filter(Boolean);
+	let mode = "default";
+	const rest: string[] = [];
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index];
+		if (token === "--mode" || token === "-m") {
+			mode = tokens[index + 1] ?? "default";
+			index++;
+		} else if (token.startsWith("--mode=")) {
+			mode = token.slice("--mode=".length) || "default";
+		} else {
+			rest.push(token);
+		}
+	}
+	return { mode, question: rest.join(" ").trim() };
+}
+
+function clipContext(label: string, content: string, maxChars = MAX_ADVISOR_CONTEXT_CHARS): string {
+	if (content.length <= maxChars) return content;
+	return `${content.slice(0, maxChars)}\n\n[${label} truncated at ${maxChars.toLocaleString()} characters]`;
+}
+
+function buildAdvisorUserPrompt(kind: "ask" | "review-diff" | "review-file", question: string, context: string): string {
+	const purpose =
+		kind === "review-diff"
+			? "Review the git diff below for correctness, maintainability, security, edge cases, and missing tests."
+			: kind === "review-file"
+				? "Review the file below for correctness, maintainability, security, edge cases, and missing tests."
+				: "Answer the coding question below. If context is provided, use it.";
+	return [
+		purpose,
+		question ? `\nUser question:\n${question}` : "",
+		context ? `\nContext:\n${clipContext(kind, context)}` : "",
+	].join("\n");
+}
+
+async function openRouterChatCompletion(
+	apiKey: string,
+	model: string,
+	prompt: string,
+	options: OpenRouterRequestOptions = {},
+): Promise<string> {
+	const response = await fetchWithTimeout(
+		`${OPENROUTER_API}/chat/completions`,
+		{
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiKey}`,
+				"Content-Type": "application/json",
+				"HTTP-Referer": "https://pi.dev",
+				"X-Title": "pi-fusion advisor",
+			},
+			body: JSON.stringify({
+				model,
+				messages: [
+					{ role: "system", content: ADVISOR_SYSTEM_PROMPT },
+					{ role: "user", content: prompt },
+				],
+				// For the plain openrouter/fusion alias, this forces the injected
+				// openrouter:fusion server tool. Presets already carry their own
+				// required tool configuration, but this is harmless there too.
+				tool_choice: "required",
+				max_tokens: 4_000,
+			}),
+		},
+		options,
+	);
+	const text = await response.text();
+	let json: ChatCompletionResponse | null = null;
+	try {
+		json = JSON.parse(text) as ChatCompletionResponse;
+	} catch {
+		// Keep raw text for the error below.
+	}
+	if (!response.ok) {
+		throw new Error(`${response.status} ${response.statusText}: ${truncate(json?.error?.message ?? text)}`);
+	}
+	const content = json?.choices?.[0]?.message?.content;
+	if (!content) throw new Error("OpenRouter returned an empty advisor response");
+	return content;
+}
+
+function renderMarkdownLines(markdown: string): string[] {
+	return markdown.trim().split("\n").slice(0, 240);
+}
+
+async function confirmFusionSpend(ctx: ExtensionCommandContext, mode: string): Promise<boolean> {
+	if (!ctx.hasUI) return true;
+	return ctx.ui.confirm(
+		"Run OpenRouter Fusion advisor?",
+		`This may run several paid model calls on OpenRouter.\n\nMode/model: ${mode}\n\nContinue?`,
+	);
+}
+
+async function showAdvisorResult(pi: ExtensionAPI, ctx: ExtensionCommandContext, title: string, mode: string, content: string) {
+	const rendered = renderMarkdownLines(content);
+	ctx.ui.setWidget("pi-fusion-advisor", [title, `mode: ${mode}`, "", ...rendered], { placement: "aboveEditor" });
+	pi.sendMessage({
+		customType: "fusion-advisor",
+		content,
+		display: true,
+		details: { title, mode, timestamp: Date.now() },
+	});
+}
+
+async function getGitDiff(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<string> {
+	const unstaged = await pi.exec("git", ["diff", "--no-ext-diff"], { cwd: ctx.cwd, timeout: 10_000 });
+	const staged = await pi.exec("git", ["diff", "--cached", "--no-ext-diff"], { cwd: ctx.cwd, timeout: 10_000 });
+	if (unstaged.code !== 0 && staged.code !== 0) {
+		throw new Error((unstaged.stderr || staged.stderr || "git diff failed").trim());
+	}
+	const parts = [];
+	if (unstaged.stdout.trim()) parts.push(`## Unstaged diff\n\n${unstaged.stdout}`);
+	if (staged.stdout.trim()) parts.push(`## Staged diff\n\n${staged.stdout}`);
+	return parts.join("\n\n");
+}
+
+function readFileForReview(pathArg: string, cwd: string): { label: string; content: string } {
+	const trimmed = pathArg.trim();
+	if (!trimmed) throw new Error("Usage: /fusion:review-file <path> [optional question] [--mode quality]");
+	const [rawPath] = trimmed.split(/\s+/, 1);
+	if (!rawPath) throw new Error("Usage: /fusion:review-file <path> [optional question] [--mode quality]");
+	const absolutePath = rawPath.startsWith("/") ? rawPath : join(cwd, rawPath);
+	const content = readFileSync(absolutePath, "utf8");
+	return { label: rawPath, content };
+}
+
+function stripFirstToken(text: string): string {
+	return text.trim().replace(/^\S+\s*/, "").trim();
+}
+
 function dollars(value: number | undefined): string {
 	if (typeof value !== "number" || Number.isNaN(value)) return "?";
 	return `$${Math.round(value * 100) / 100}`;
@@ -348,6 +532,16 @@ async function loginWithOpenRouterKey(callbacks: OAuthLoginCallbacks): Promise<O
 }
 
 export default function piFusion(pi: ExtensionAPI) {
+	pi.registerMessageRenderer("fusion-advisor", (message, { expanded }, theme) => {
+		const details = message.details as { title?: string; mode?: string; timestamp?: number } | undefined;
+		const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content, null, 2);
+		const visible = expanded ? content : renderMarkdownLines(content).join("\n");
+		const header = `${theme.fg("success", details?.title ?? "pi-fusion advisor")} ${theme.fg("dim", details?.mode ? `(${details.mode})` : "")}`;
+		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+		box.addChild(new Text(`${header}\n${visible}`, 0, 0));
+		return box;
+	});
+
 	pi.registerProvider(PROVIDER_ID, {
 		name: "Pi Fusion (OpenRouter)",
 		baseUrl: OPENROUTER_API,
@@ -505,6 +699,127 @@ export default function piFusion(pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("fusion:ask", {
+		description: "Ask OpenRouter Fusion for a structured second opinion",
+		getArgumentCompletions: (prefix) => {
+			const options = ["--mode", "--mode=budget", "--mode=quality", "--mode=frontier", ...PRESETS.map((preset) => preset.mode)];
+			return options.filter((option) => option.startsWith(prefix.toLowerCase())).map((option) => ({ value: option, label: option }));
+		},
+		handler: async (args, ctx) => {
+			const parsed = parseAdvisorArgs(args);
+			let question = parsed.question;
+			if (!question && ctx.hasUI) question = (await ctx.ui.input("Ask Fusion", "What should the model panel analyze?"))?.trim() ?? "";
+			if (!question) {
+				notifyMultiline(ctx, "pi-fusion ask", ["Usage: /fusion:ask [--mode budget|quality|frontier] <question>"], "warning");
+				return;
+			}
+			const model = resolveAdvisorModel(parsed.mode);
+			if (typeof model !== "string") {
+				notifyMultiline(ctx, "pi-fusion ask", [model.error], "warning");
+				return;
+			}
+			const key = getOpenRouterKey();
+			if (!key) {
+				notifyMultiline(ctx, "pi-fusion ask", ["No OpenRouter key found. Set OPENROUTER_API_KEY, run /login pi-fusion, or run /login openrouter."], "warning");
+				return;
+			}
+			if (!(await confirmFusionSpend(ctx, model))) return;
+			ctx.ui.setStatus("pi-fusion", "asking Fusion…");
+			try {
+				const prompt = buildAdvisorUserPrompt("ask", question, "");
+				const answer = await openRouterChatCompletion(key.key, model, prompt);
+				await showAdvisorResult(pi, ctx, "pi-fusion advisor", model, answer);
+			} catch (error) {
+				notifyMultiline(ctx, "pi-fusion ask failed", [error instanceof Error ? error.message : String(error)], "error");
+			} finally {
+				ctx.ui.setStatus("pi-fusion", undefined);
+			}
+		},
+	});
+
+	pi.registerCommand("fusion:review-diff", {
+		description: "Review the current git diff with OpenRouter Fusion",
+		getArgumentCompletions: (prefix) => {
+			const options = ["--mode", "--mode=budget", "--mode=quality", "--mode=frontier", ...PRESETS.map((preset) => preset.mode)];
+			return options.filter((option) => option.startsWith(prefix.toLowerCase())).map((option) => ({ value: option, label: option }));
+		},
+		handler: async (args, ctx) => {
+			const parsed = parseAdvisorArgs(args);
+			const model = resolveAdvisorModel(parsed.mode);
+			if (typeof model !== "string") {
+				notifyMultiline(ctx, "pi-fusion review-diff", [model.error], "warning");
+				return;
+			}
+			const key = getOpenRouterKey();
+			if (!key) {
+				notifyMultiline(ctx, "pi-fusion review-diff", ["No OpenRouter key found. Set OPENROUTER_API_KEY, run /login pi-fusion, or run /login openrouter."], "warning");
+				return;
+			}
+			let diff = "";
+			try {
+				diff = await getGitDiff(pi, ctx);
+			} catch (error) {
+				notifyMultiline(ctx, "pi-fusion review-diff", [error instanceof Error ? error.message : String(error)], "error");
+				return;
+			}
+			if (!diff.trim()) {
+				notifyMultiline(ctx, "pi-fusion review-diff", ["No staged or unstaged git diff found."], "info");
+				return;
+			}
+			if (!(await confirmFusionSpend(ctx, model))) return;
+			ctx.ui.setStatus("pi-fusion", "reviewing diff with Fusion…");
+			try {
+				const prompt = buildAdvisorUserPrompt("review-diff", parsed.question, diff);
+				const answer = await openRouterChatCompletion(key.key, model, prompt);
+				await showAdvisorResult(pi, ctx, "pi-fusion diff review", model, answer);
+			} catch (error) {
+				notifyMultiline(ctx, "pi-fusion review-diff failed", [error instanceof Error ? error.message : String(error)], "error");
+			} finally {
+				ctx.ui.setStatus("pi-fusion", undefined);
+			}
+		},
+	});
+
+	pi.registerCommand("fusion:review-file", {
+		description: "Review one file with OpenRouter Fusion",
+		getArgumentCompletions: (prefix) => {
+			const options = ["--mode", "--mode=budget", "--mode=quality", "--mode=frontier", ...PRESETS.map((preset) => preset.mode)];
+			return options.filter((option) => option.startsWith(prefix.toLowerCase())).map((option) => ({ value: option, label: option }));
+		},
+		handler: async (args, ctx) => {
+			let file;
+			try {
+				file = readFileForReview(args, ctx.cwd);
+			} catch (error) {
+				notifyMultiline(ctx, "pi-fusion review-file", [error instanceof Error ? error.message : String(error)], "warning");
+				return;
+			}
+			const parsed = parseAdvisorArgs(stripFirstToken(args));
+			const model = resolveAdvisorModel(parsed.mode);
+			if (typeof model !== "string") {
+				notifyMultiline(ctx, "pi-fusion review-file", [model.error], "warning");
+				return;
+			}
+			const key = getOpenRouterKey();
+			if (!key) {
+				notifyMultiline(ctx, "pi-fusion review-file", ["No OpenRouter key found. Set OPENROUTER_API_KEY, run /login pi-fusion, or run /login openrouter."], "warning");
+				return;
+			}
+			if (!(await confirmFusionSpend(ctx, model))) return;
+			ctx.ui.setStatus("pi-fusion", `reviewing ${file.label} with Fusion…`);
+			try {
+				const context = `File: ${file.label}\n\n${file.content}`;
+				const prompt = buildAdvisorUserPrompt("review-file", parsed.question, context);
+				const answer = await openRouterChatCompletion(key.key, model, prompt);
+				await showAdvisorResult(pi, ctx, `pi-fusion file review: ${file.label}`, model, answer);
+			} catch (error) {
+				notifyMultiline(ctx, "pi-fusion review-file failed", [error instanceof Error ? error.message : String(error)], "error");
+			} finally {
+				ctx.ui.setStatus("pi-fusion", undefined);
+			}
+		},
+	});
+
 	pi.registerCommand("fusion:help", {
 		description: "Show pi-fusion usage",
 		handler: async (_args, ctx) => {
@@ -520,6 +835,12 @@ export default function piFusion(pi: ExtensionAPI) {
 					"",
 					"Preset modes:",
 					...PRESETS.map((preset) => `  ${preset.mode.padEnd(8)} — ${preset.description}`),
+					"",
+					"Advisor commands:",
+					"  /fusion:ask <question>",
+					"  /fusion:review-diff [optional focus]",
+					"  /fusion:review-file <path> [optional focus]",
+					"  add --mode budget|quality|frontier to use a preset",
 					"",
 					"Create presets:",
 					"  /fusion:setup",

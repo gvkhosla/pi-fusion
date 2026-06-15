@@ -1,19 +1,20 @@
 # pi-fusion
 
-Use [OpenRouter Fusion](https://openrouter.ai/docs/guides/routing/routers/fusion-router) in [Pi](https://pi.dev) as a first-class model provider.
+A multi-model second-opinion layer for [Pi](https://pi.dev), powered by [OpenRouter Fusion](https://openrouter.ai/docs/guides/routing/routers/fusion-router).
 
-Fusion is OpenRouter's multi-model deliberation router: several models can reason over the same prompt in parallel, a judge analyzes the results, and the outer model writes a stronger final answer.
+Keep coding with your normal Pi model. When a problem is hard, ambiguous, or worth double-checking, call Fusion to ask a panel of models to review the question, your diff, or a file.
 
-## Why
+## Why this exists
 
-Pi already has a native provider/model system, so `pi-fusion` does not wrap the `pi` binary or spoof Anthropic environment variables. It simply teaches Pi about Fusion:
+You can already call OpenRouter from Pi. `pi-fusion` adds the workflow around it:
 
-```text
-provider: pi-fusion
-model:    openrouter/fusion
-```
+- `/fusion:ask` for a direct multi-model second opinion
+- `/fusion:review-diff` to review your current git diff
+- `/fusion:review-file` to review a specific file
+- budget / quality / frontier preset modes for cost vs capability
+- `/fusion:doctor` and `/fusion:setup` for setup and diagnostics
 
-You also get optional `budget`, `quality`, and `frontier` preset modes for dialing cost vs capability.
+It also still registers Fusion as a first-class Pi provider/model if you want to use it as your main model.
 
 ## Install
 
@@ -53,7 +54,43 @@ or reuse Pi's built-in OpenRouter auth:
 2. `~/.pi/agent/auth.json` entry for `pi-fusion`
 3. `~/.pi/agent/auth.json` entry for `openrouter`
 
-## Use
+## Advisor commands
+
+Ask a general coding question:
+
+```text
+/fusion:ask why is this architecture risky?
+/fusion:ask --mode quality compare these two approaches
+```
+
+Review your staged and unstaged git diff:
+
+```text
+/fusion:review-diff
+/fusion:review-diff --mode frontier focus on correctness and tests
+```
+
+Review one file:
+
+```text
+/fusion:review-file src/server.ts
+/fusion:review-file src/server.ts --mode budget look for security issues
+```
+
+Advisor output is structured as:
+
+```text
+Verdict
+Main risks
+Disagreements / uncertainty
+Concrete fixes
+Tests to add
+Confidence
+```
+
+Every advisor command asks for confirmation before making paid Fusion calls.
+
+## Use Fusion as your main model
 
 Default OpenRouter Fusion, no setup required:
 
@@ -61,7 +98,9 @@ Default OpenRouter Fusion, no setup required:
 pi --provider pi-fusion --model openrouter/fusion
 ```
 
-Optional preset modes:
+## Preset modes
+
+Create presets from inside Pi:
 
 ```text
 /fusion:setup                 # create all presets on your OpenRouter account
@@ -69,7 +108,15 @@ Optional preset modes:
 /fusion:setup quality frontier
 ```
 
-Then run:
+Then use them in advisor commands:
+
+```text
+/fusion:ask --mode budget <question>
+/fusion:review-diff --mode quality
+/fusion:review-file src/foo.ts --mode frontier
+```
+
+Or as main models:
 
 ```bash
 pi --provider pi-fusion --model budget
@@ -92,11 +139,10 @@ Inside Pi:
 /fusion:help
 /fusion:doctor
 /fusion:setup [budget|quality|frontier|all]
+/fusion:ask [--mode budget|quality|frontier] <question>
+/fusion:review-diff [--mode budget|quality|frontier] [optional focus]
+/fusion:review-file <path> [--mode budget|quality|frontier] [optional focus]
 ```
-
-- `/fusion:doctor` checks key validity, credits, and preset availability.
-- `/fusion:setup` creates or updates OpenRouter presets on your account.
-- `/fusion:help` shows usage.
 
 ## Configure modes
 
@@ -136,7 +182,7 @@ Rules:
 
 - Fusion costs more than a single model call: roughly N panel calls + one judge call + the outer response.
 - Preset modes only work after `/fusion:setup` creates them for the current OpenRouter account.
-- Pi's normal coding tools remain available. For simple prompts, OpenRouter's outer model may answer directly instead of invoking Fusion.
+- Advisor commands send selected context to OpenRouter. Review diffs/files before sending sensitive code.
 - Pi cannot know Fusion's exact dynamic cost from static token prices, so model costs are registered as zero. Use OpenRouter activity/credits for authoritative billing.
 
 ## Development

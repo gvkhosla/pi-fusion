@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildFusionPresetRequest, parsePresetArgs, resolvePresets, type FusionPreset } from "../extensions/pi-fusion.ts";
+import { buildFusionPresetRequest, parseAdvisorArgs, parsePresetArgs, resolvePresets, type FusionPreset } from "../extensions/pi-fusion.ts";
 
 test("resolvePresets returns the built-in budget, quality, and frontier modes", () => {
 	const presets = resolvePresets(null);
@@ -60,6 +60,13 @@ test("parsePresetArgs selects modes, deduplicates, supports all, and reports unk
 	const unknown = parsePresetArgs("budget nope", presets);
 	assert.ok("error" in unknown);
 	assert.match(unknown.error, /Unknown mode\(s\): nope/);
+});
+
+test("parseAdvisorArgs supports --mode flags and preserves the question", () => {
+	assert.deepEqual(parseAdvisorArgs("why is this failing?"), { mode: "default", question: "why is this failing?" });
+	assert.deepEqual(parseAdvisorArgs("--mode quality why is this failing?"), { mode: "quality", question: "why is this failing?" });
+	assert.deepEqual(parseAdvisorArgs("--mode=frontier review the diff"), { mode: "frontier", question: "review the diff" });
+	assert.deepEqual(parseAdvisorArgs("-m budget check tests"), { mode: "budget", question: "check tests" });
 });
 
 test("buildFusionPresetRequest emits OpenRouter Fusion server-tool payload", () => {
