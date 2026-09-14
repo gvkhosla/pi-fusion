@@ -1,6 +1,9 @@
 {
-  "name": "pi-fusion",
+  "name": "@khosla/pi-fusion",
   "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "Use OpenRouter Fusion from Pi as a first-class model provider.",
   "keywords": [
     "pi-package",

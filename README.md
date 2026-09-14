@@ -1,5 +1,7 @@
 # pi-fusion
 
+[![npm](https://img.shields.io/npm/v/@khosla/pi-fusion)](https://www.npmjs.com/package/@khosla/pi-fusion)
+
 Keep coding with your normal Pi model. When a problem is hard, call Fusion for a second opinion on the question, your diff, or a file — without switching models.
 
 A multi-model advisor layer for [Pi](https://pi.dev), powered by [OpenRouter Fusion](https://openrouter.ai/docs/guides/routing/routers/fusion-router).
@@ -18,7 +20,13 @@ It also still registers Fusion as a first-class Pi provider/model if you want to
 
 ## Install
 
-Install **this repo**. The npm package named `pi-fusion` is a different project.
+Install **this package**. The unscoped npm name `pi-fusion` is a different project.
+
+```bash
+pi install npm:@khosla/pi-fusion
+```
+
+Or from git:
 
 ```bash
 pi install git:github.com/gvkhosla/pi-fusion
