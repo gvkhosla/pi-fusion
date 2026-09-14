@@ -26,6 +26,13 @@ Install **this package**. The unscoped npm name `pi-fusion` is a different proje
 pi install npm:@khosla/pi-fusion
 ```
 
+Then:
+
+```text
+/fusion:doctor
+/fusion:review-diff
+```
+
 Or from git:
 
 ```bash
