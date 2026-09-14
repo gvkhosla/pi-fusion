@@ -1,8 +1,8 @@
 # pi-fusion
 
-A multi-model second-opinion layer for [Pi](https://pi.dev), powered by [OpenRouter Fusion](https://openrouter.ai/docs/guides/routing/routers/fusion-router).
+Keep coding with your normal Pi model. When a problem is hard, call Fusion for a second opinion on the question, your diff, or a file — without switching models.
 
-Keep coding with your normal Pi model. When a problem is hard, ambiguous, or worth double-checking, call Fusion to ask a panel of models to review the question, your diff, or a file.
+A multi-model advisor layer for [Pi](https://pi.dev), powered by [OpenRouter Fusion](https://openrouter.ai/docs/guides/routing/routers/fusion-router).
 
 ## Why this exists
 
@@ -17,6 +17,8 @@ You can already call OpenRouter from Pi. `pi-fusion` adds the workflow around it
 It also still registers Fusion as a first-class Pi provider/model if you want to use it as your main model.
 
 ## Install
+
+Install **this repo**. The npm package named `pi-fusion` is a different project.
 
 ```bash
 pi install git:github.com/gvkhosla/pi-fusion
